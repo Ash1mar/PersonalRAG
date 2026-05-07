@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-from libs.common.models import Block, KnowledgeObject
+from libs.common.models import Block, Expression, KnowledgeObject, LocalKnowledgeBaseIndex
+from libs.embedding.embedder import cosine_similarity, get_embedder
 from online_runtime.retrieval.base import BaseRetriever
 
 
 class LocalRetriever(BaseRetriever):
-    def __init__(self, blocks: list[Block], kos: list[KnowledgeObject]) -> None:
-        self.blocks = blocks
-        self.kos = kos
+    def __init__(self, index: LocalKnowledgeBaseIndex) -> None:
+        self.index = index
+        self.embedder = get_embedder(index.embedding_backend)
 
     def retrieve_blocks(self, query: str, filters: dict, top_k: int) -> list[Block]:
-        candidates = _filter_blocks(self.blocks, filters)
+        query_vector = self.embedder.embed_texts([query])[0]
+        candidates = _filter_blocks(self.index.blocks, self.index.block_vectors, filters)
         ranked = sorted(
             candidates,
-            key=lambda block: _score_block(block, query, filters),
+            key=lambda item: _score_block(item[0], item[1], query, query_vector, filters),
             reverse=True,
         )
-        return ranked[:top_k]
+        return [block for block, _ in ranked[:top_k]]
 
     def retrieve_kos(
         self,
@@ -25,76 +27,95 @@ class LocalRetriever(BaseRetriever):
         top_k: int,
         allowed_types: list[str] | None = None,
     ) -> list[KnowledgeObject]:
-        candidates = self.kos
-        if allowed_types:
-            candidates = [item for item in candidates if item.k_type in allowed_types]
-        candidates = _filter_kos(candidates, filters)
+        query_vector = self.embedder.embed_texts([query])[0]
+        candidates = _filter_kos(self.index.knowledge_objects, self.index.ko_vectors, filters, allowed_types)
         ranked = sorted(
             candidates,
-            key=lambda item: _score_ko(item, query, filters),
+            key=lambda item: _score_ko(item[0], item[1], query, query_vector, filters),
             reverse=True,
         )
-        return ranked[:top_k]
+        return [ko for ko, _ in ranked[:top_k]]
+
+    def retrieve_expressions(self, query: str, filters: dict, top_k: int) -> list[Expression]:
+        query_vector = self.embedder.embed_texts([query])[0]
+        candidates = _filter_expressions(self.index.expressions, self.index.expression_vectors, filters)
+        ranked = sorted(
+            candidates,
+            key=lambda item: _score_expression(item[0], item[1], query, query_vector, filters),
+            reverse=True,
+        )
+        return [expression for expression, _ in ranked[:top_k]]
 
 
-def _score_block(block: Block, query: str, filters: dict) -> int:
-    score = _score_text(block.text, query, block.heading_path)
-    heading = " ".join(block.heading_path)
+def _score_block(block: Block, vector: list[float], query: str, query_vector: list[float], filters: dict) -> float:
+    score = cosine_similarity(query_vector, vector)
+    score += _heading_stage_boost(block.heading_path, filters)
+    score += _keyword_overlap(query, block.text)
+    return score
+
+
+def _score_ko(item: KnowledgeObject, vector: list[float], query: str, query_vector: list[float], filters: dict) -> float:
+    score = cosine_similarity(query_vector, vector)
+    score += _heading_stage_boost(item.source_headings, filters)
+    score += _keyword_overlap(query, item.canonical)
+    return score
+
+
+def _score_expression(item: Expression, vector: list[float], query: str, query_vector: list[float], filters: dict) -> float:
+    score = cosine_similarity(query_vector, vector)
+    score += _heading_stage_boost(item.source_headings, filters)
+    score += _keyword_overlap(query, item.canonical)
+    return score
+
+
+def _heading_stage_boost(headings: list[str], filters: dict) -> float:
     stage_terms = filters.get("stage") or []
-    if any(term in heading for term in stage_terms):
-        score += 8
-    return score
+    heading_text = " ".join(headings)
+    return 0.2 if any(term in heading_text for term in stage_terms) else 0.0
 
 
-def _score_ko(item: KnowledgeObject, query: str, filters: dict) -> int:
-    score = _score_text(item.canonical, query, item.topic + item.source_headings)
-    stage_terms = filters.get("stage") or []
-    heading = " ".join(item.source_headings)
-    if any(term in heading for term in stage_terms):
-        score += 8
-    if item.k_type == "experience" and any(term in {"措施", "做法", "举措", "计划", "下一步"} for term in stage_terms):
-        score += 4
-    if item.k_type == "fact" and any(term in {"概况", "总体情况", "成效", "成果", "亮点", "问题", "不足"} for term in stage_terms):
-        score += 4
-    return score
-
-
-def _score_text(text: str, query: str, extra_terms: list[str] | None) -> int:
-    score = 0
-    query_terms = _query_terms(query)
-    haystack = text.lower()
-    for term in query_terms:
-        if term.lower() in haystack:
-            score += 3
-    for term in extra_terms or []:
-        if term and term in query:
-            score += 2
-    if score == 0:
-        score = len(text) // 40
-    return score
-
-
-def _query_terms(query: str) -> list[str]:
+def _keyword_overlap(query: str, text: str) -> float:
     compact = query.replace("，", " ").replace("。", " ").strip()
     terms = [term for term in compact.split() if term]
-    if terms:
-        return terms
-    if len(compact) <= 4:
-        return [compact]
-    return [compact, compact[:2], compact[-2:]]
+    if not terms and compact:
+        terms = [compact, compact[:2], compact[-2:]] if len(compact) > 4 else [compact]
+    overlap = sum(1 for term in terms if term and term in text)
+    return overlap * 0.05
 
 
-def _filter_blocks(blocks: list[Block], filters: dict) -> list[Block]:
+def _filter_blocks(blocks: list[Block], vectors: list[list[float]], filters: dict) -> list[tuple[Block, list[float]]]:
+    stage_terms = filters.get("stage") or []
+    pairs = list(zip(blocks, vectors))
+    if not stage_terms:
+        return pairs
+    matched = [pair for pair in pairs if any(term in " ".join(pair[0].heading_path) for term in stage_terms)]
+    return matched or pairs
+
+
+def _filter_kos(
+    kos: list[KnowledgeObject],
+    vectors: list[list[float]],
+    filters: dict,
+    allowed_types: list[str] | None,
+) -> list[tuple[KnowledgeObject, list[float]]]:
+    pairs = list(zip(kos, vectors))
+    if allowed_types:
+        pairs = [pair for pair in pairs if pair[0].k_type in allowed_types]
     stage_terms = filters.get("stage") or []
     if not stage_terms:
-        return blocks
-    matched = [block for block in blocks if any(term in " ".join(block.heading_path) for term in stage_terms)]
-    return matched or blocks
+        return pairs
+    matched = [pair for pair in pairs if any(term in " ".join(pair[0].source_headings) for term in stage_terms)]
+    return matched or pairs
 
 
-def _filter_kos(kos: list[KnowledgeObject], filters: dict) -> list[KnowledgeObject]:
+def _filter_expressions(
+    expressions: list[Expression],
+    vectors: list[list[float]],
+    filters: dict,
+) -> list[tuple[Expression, list[float]]]:
+    pairs = list(zip(expressions, vectors))
     stage_terms = filters.get("stage") or []
     if not stage_terms:
-        return kos
-    matched = [item for item in kos if any(term in " ".join(item.source_headings) for term in stage_terms)]
-    return matched or kos
+        return pairs
+    matched = [pair for pair in pairs if any(term in " ".join(pair[0].source_headings) for term in stage_terms)]
+    return matched or pairs

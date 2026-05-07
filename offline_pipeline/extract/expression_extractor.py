@@ -8,12 +8,13 @@ def get_default_expressions() -> list[Expression]:
             canonical="以高质量知识组织支撑高质量写作产出",
             topic="知识管理",
             status="active",
+            confidence=0.6,
         ),
         Expression(
             expr_id="EXPR_002",
             canonical="建立清单化推进、闭环式督办机制",
             topic="机制建设",
             status="active",
+            confidence=0.6,
         ),
     ]
-

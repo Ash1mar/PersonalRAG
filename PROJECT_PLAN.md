@@ -22,19 +22,22 @@
 
 ## 2. 当前约束与调整
 
-公司内部已有现成的知识库与向量召回接口，因此当前阶段不重点建设完整自研检索基础设施。
+公司内部已有现成的知识库与向量召回接口，但在真正接入之前，系统必须先具备一套自有、最轻量且完整可验证的知识库与向量召回链路。
 
 当前策略调整为：
 
-- 保留检索层的统一接口
-- 先用本地简化实现跑通链路
+- KO 抽取上优先面向 LLM，而不是规则主导
+- 规则只作为 LLM 失败时的辅助和 fallback
+- 模型调用保留统一 provider 接口
+- 检索层保留统一 backend 接口
+- 先自建本地知识库与向量召回
 - 后续再接入公司内部知识库/向量召回接口
 - 先把知识组织、裁决逻辑、EvidenceBundle 结构做稳定
 
 因此，当前最小业务闭环为：
 
 ```text
-文档导入 -> blocks -> KO 抽取 -> slot 检索编排 -> 简化召回 -> 裁决 -> EvidenceBundle
+文档导入 -> blocks -> LLM KO 抽取 -> 本地知识库建索引 -> 本地向量召回 -> slot 检索编排 -> 裁决 -> EvidenceBundle
 ```
 
 ---
@@ -62,8 +65,8 @@
 
 当前阶段只做轻量版：
 
-- 人工维护少量 canonical expressions
-- 按 topic 或 task_type 提供给生成阶段
+- 优先由 LLM 从 block 中抽取正式口径
+- 当 LLM 没有稳定抽到 expression 时，才退回少量轻量默认表达
 
 后续再升级为 bootstrap expression library。
 
@@ -87,12 +90,16 @@
 
 - 文档导入与解析
 - `blocks` 数据结构
-- `Fact` 抽取
-- `Experience` 抽取
+- `Fact / Experience / Expression` 的 LLM 优先抽取
+- Ollama 抽取客户端
+- Chat provider / embedding provider 工厂
+- 本地知识库索引
+- 本地向量召回
+- 可组合 retrieval backends
 - `slot -> filters` 编排
 - EvidenceBundle 结构定义
 - 检索适配层抽象
-- 本地简化 retriever
+- 本地 retriever
 
 ### 4.2 暂缓做
 
@@ -153,15 +160,16 @@ docs/
 - 本地文件导入
 - `PDF/DOCX -> blocks`
 - 解析 `doc_id / page_no / heading_path / order / text`
-- 实现 `Fact` 抽取
-- 实现 `Experience` 抽取
-- `Expression` 先用手工维护的小型配置表
+- 接入 Ollama 做 `Fact / Experience / Expression` 抽取
+- 规则仅保留为 fallback
+- 记录 extraction summary 和 warnings
 
 阶段产物：
 
 - `blocks.json` 或等价持久化结果
 - `facts.json`
 - `experiences.json`
+- `expressions.json`
 
 ---
 
@@ -172,8 +180,12 @@ docs/
 计划内容：
 
 - 定义统一 Retriever 接口
+- 定义统一 RetrievalBackend 接口
+- 实现 `LocalKnowledgeBase`
 - 实现 `LocalRetriever`
+- 实现 `CompositeRetriever`
 - 预留 `CompanyRetriever`
+- 实现本地向量索引和本地检索 API
 - 支持 `query + filters + top_k` 方式调用
 
 建议接口：
@@ -186,6 +198,8 @@ retrieve_kos(query: str, filters: dict, top_k: int)
 说明：
 
 - `LocalRetriever` 只要求简单可跑通
+- 但必须是真实的本地知识库和本地向量召回
+- 并且必须支持后续叠加多种 backend
 - `CompanyRetriever` 后续用于接公司内部知识库与向量召回接口
 
 ---
@@ -220,6 +234,8 @@ retrieve_kos(query: str, filters: dict, top_k: int)
 
 - 接入公司内部知识库接口
 - 接入公司内部向量召回接口
+- 本地知识库跨文档聚合
+- 本地索引增量更新
 - 增加更丰富的 metadata/filter
 - 增加 rerank
 - 增加 `Experience grounding`
@@ -234,8 +250,10 @@ retrieve_kos(query: str, filters: dict, top_k: int)
 第一阶段的验收目标收敛为以下三项：
 
 1. 导入样例文档后，能够生成 `blocks + facts + experiences`
-2. 给定任务与 outline 后，能够输出按 slot 组织的 `EvidenceBundle`
-3. 检索层可以在 `LocalRetriever` 与未来的 `CompanyRetriever` 之间切换
+2. 导入样例文档后，能够生成 `expressions`
+3. 能够构建本地知识库索引并执行本地向量召回
+4. 给定任务与 outline 后，能够输出按 slot 组织的 `EvidenceBundle`
+5. 检索层可以在 `LocalRetriever` 与未来的 `CompanyRetriever` 之间切换
 
 ---
 
@@ -247,9 +265,10 @@ retrieve_kos(query: str, filters: dict, top_k: int)
 2. 建立最小 Python 工程入口
 3. 定义核心数据结构：`Block`、`Fact`、`Experience`、`Slot`、`EvidenceBundle`
 4. 实现最小 parser
-5. 实现最小 extractor
-6. 实现 retriever 抽象与本地简化版
-7. 实现 EvidenceBundle 生成
+5. 实现 Ollama 优先 extractor
+6. 实现本地知识库与本地向量召回
+7. 实现 retriever 抽象与本地版
+8. 实现 EvidenceBundle 生成
 
 ---
 
@@ -296,3 +315,38 @@ retrieve_kos(query: str, filters: dict, top_k: int)
 ### 影响
 - 当前仓库已经进入 Phase 0 到 Phase 3 的初始实现阶段
 - 后续优先补的是解析能力、检索适配和裁决质量，而不是重建底层向量基础设施
+
+## 2026-05-07 更新
+
+### 变更
+- 已接入 Ollama 结构化抽取，支持 `Fact / Experience / Expression`
+- 已实现 `extract_knowledge` 统一抽取入口
+- 已实现本地知识库 `LocalKnowledgeBase`
+- 已实现本地向量召回和 `/index`、`/search` API
+- 已将 `LocalRetriever` 改为基于本地向量索引工作
+- 已把 rules 的角色降为 fallback
+
+### 原因
+- 项目方向明确要求 KO 从一开始就面向 LLM
+- 在接公司接口前，必须先有一套自有的可验证知识库与向量召回链路
+
+### 影响
+- 当前 MVP 已不再是“规则抽取 + 关键词检索”的原型
+- 后续优化重点转为：抽取质量、本地索引组织、跨文档检索和公司接口切换
+
+## 2026-05-07 模块化更新
+
+### 变更
+- 已把 LLM 调用抽象为 provider 工厂
+- 已把 embedding 调用抽象为 provider/backends
+- 已把召回实现抽象为 RetrievalBackend
+- 已增加 `CompositeRetriever` 支持多 backend 组合
+- 已增加 `local_keyword` backend 作为第二种可组合召回方式
+
+### 原因
+- 本机与公司环境使用的模型服务未必一致
+- 后续要接入公司知识库与更多召回方式，主链路不能依赖单个实现
+
+### 影响
+- 现在主链路依赖的是 provider/backend 接口，而不是 Ollama 或本地向量库本身
+- 后续增加新模型服务或新召回方式时，不需要改 EvidenceBundle 主流程

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -75,14 +76,30 @@ class KnowledgeObject(BaseModel):
 class Expression(BaseModel):
     expr_id: str
     canonical: str
-    topic: str
-    status: str
+    topic: str | None = None
+    status: str = "active"
+    confidence: float = 0.0
+    source_headings: list[str] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
 
 
 class Document(BaseModel):
     meta: DocumentMeta
     blocks: list[Block]
     raw_text: str
+
+
+class ExtractionSummary(BaseModel):
+    method: str
+    chat_model: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ExtractionArtifacts(BaseModel):
+    facts: list[KnowledgeObject] = Field(default_factory=list)
+    experiences: list[KnowledgeObject] = Field(default_factory=list)
+    expressions: list[Expression] = Field(default_factory=list)
+    summary: ExtractionSummary
 
 
 class Slot(BaseModel):
@@ -94,6 +111,9 @@ class Slot(BaseModel):
 class RetrievalInfo(BaseModel):
     filters: dict
     candidate_block_count: int
+    candidate_ko_count: int = 0
+    candidate_expression_count: int = 0
+    backend: str | None = None
 
 
 class SlotBundle(BaseModel):
@@ -118,6 +138,31 @@ class EvidenceBundle(BaseModel):
     task_context: TaskContext
     outline: list[Slot]
     slots: list[SlotBundle]
+
+
+class SearchHit(BaseModel):
+    item_id: str
+    item_type: Literal["block", "fact", "experience", "expression"]
+    score: float
+    doc_id: str
+    text: str
+    source_headings: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class LocalKnowledgeBaseIndex(BaseModel):
+    doc_id: str
+    source_path: str | None = None
+    built_at: str
+    extraction_method: str
+    chat_model: str | None = None
+    embedding_backend: str
+    blocks: list[Block] = Field(default_factory=list)
+    block_vectors: list[list[float]] = Field(default_factory=list)
+    knowledge_objects: list[KnowledgeObject] = Field(default_factory=list)
+    ko_vectors: list[list[float]] = Field(default_factory=list)
+    expressions: list[Expression] = Field(default_factory=list)
+    expression_vectors: list[list[float]] = Field(default_factory=list)
 
 
 def _doc_id_from_path(source_path: str | None) -> str | None:

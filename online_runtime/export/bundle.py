@@ -4,19 +4,18 @@ from apps.api.schemas import SlotInput
 from libs.common.models import (
     Document,
     EvidenceBundle,
-    KnowledgeObject,
+    ExtractionArtifacts,
     RetrievalInfo,
     Slot,
     SlotBundle,
     TaskContext,
 )
-from offline_pipeline.extract.expression_extractor import get_default_expressions
-from offline_pipeline.extract.fact_extractor import extract_facts
-from offline_pipeline.extract.experience_extractor import extract_experiences
+from offline_pipeline.extract.ko_extractor import extract_knowledge
 from online_runtime.decision.evidence_selector import select_evidence
 from online_runtime.decision.object_judge import judge_object
 from online_runtime.outline.slot_schema import default_outline
-from online_runtime.retrieval.local_retriever import LocalRetriever
+from online_runtime.retrieval.composite_retriever import CompositeRetriever
+from online_runtime.retrieval.factory import get_retrieval_backends
 from online_runtime.retrieval.slot_to_filters import slot_to_filters
 
 
@@ -27,12 +26,35 @@ def build_evidence_bundle(
     dept: str | None,
     year: int | None,
     outline: list[SlotInput] | None,
+    chat_provider: str | None = None,
+    chat_model: str | None = None,
+    embedding_provider: str | None = None,
+    embedding_model: str | None = None,
+    retrieval_backends: list[str] | None = None,
+    persist_index: bool = True,
 ) -> EvidenceBundle:
-    facts = extract_facts(document)
-    experiences = extract_experiences(document)
-    expressions = get_default_expressions()
-    all_kos: list[KnowledgeObject] = facts + experiences
-    retriever = LocalRetriever(document.blocks, all_kos)
+    extracted: ExtractionArtifacts = extract_knowledge(
+        document,
+        chat_model=chat_model,
+        chat_provider=chat_provider,
+    )
+    backend_instances = get_retrieval_backends(retrieval_backends)
+    retrievers = []
+    backend_infos: list[str] = []
+    for backend in backend_instances:
+        retriever, backend_info = backend.create_retriever(
+            document=document,
+            extracted=extracted,
+            persist_index=persist_index,
+            embedding_provider=embedding_provider,
+            embedding_model=embedding_model,
+        )
+        retrievers.append(retriever)
+        backend_infos.append(backend_info.get("backend", backend.backend_id))
+        if backend_info.get("embedding_backend"):
+            backend_infos[-1] = f"{backend_infos[-1]}[{backend_info['embedding_backend']}]"
+
+    retriever = CompositeRetriever(retrievers)
     slots = _resolve_outline(outline)
     slot_bundles: list[SlotBundle] = []
 
@@ -45,8 +67,9 @@ def build_evidence_bundle(
             top_k=5,
             allowed_types=slot.focus_types,
         )
+        ranked_expressions = retriever.retrieve_expressions(query=slot.title, filters=filters, top_k=3)
 
-        decided: list[KnowledgeObject] = []
+        decided = []
         for ko in ranked_kos:
             decision, validity, reason = judge_object(ko, slot.slot_id)
             decided.append(
@@ -65,10 +88,16 @@ def build_evidence_bundle(
                 slot_id=slot.slot_id,
                 title=slot.title,
                 focus_types=slot.focus_types,
-                retrieval_info=RetrievalInfo(filters=filters, candidate_block_count=len(ranked_blocks)),
+                retrieval_info=RetrievalInfo(
+                    filters=filters,
+                    candidate_block_count=len(ranked_blocks),
+                    candidate_ko_count=len(ranked_kos),
+                    candidate_expression_count=len(ranked_expressions),
+                    backend=",".join(backend_infos),
+                ),
                 ranked_blocks=ranked_blocks,
                 knowledge_objects=decided,
-                expressions=expressions if slot.slot_id in {"S1_overview", "S2_measures", "S5_nextsteps"} else [],
+                expressions=ranked_expressions,
             )
         )
 
@@ -85,4 +114,3 @@ def _resolve_outline(outline: list[SlotInput] | None) -> list[Slot]:
     if not outline:
         return default_outline()
     return [Slot(slot_id=item.slot_id, title=item.title, focus_types=item.focus_types) for item in outline]
-

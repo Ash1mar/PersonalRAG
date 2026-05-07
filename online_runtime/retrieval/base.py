@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from libs.common.models import Block, KnowledgeObject
+from libs.common.models import Block, Expression, KnowledgeObject
 
 
 class BaseRetriever(ABC):
@@ -20,3 +20,6 @@ class BaseRetriever(ABC):
     ) -> list[KnowledgeObject]:
         raise NotImplementedError
 
+    @abstractmethod
+    def retrieve_expressions(self, query: str, filters: dict, top_k: int) -> list[Expression]:
+        raise NotImplementedError

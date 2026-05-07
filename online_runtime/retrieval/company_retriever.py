@@ -1,4 +1,4 @@
-from libs.common.models import Block, KnowledgeObject
+from libs.common.models import Block, Expression, KnowledgeObject
 from online_runtime.retrieval.base import BaseRetriever
 
 
@@ -15,3 +15,5 @@ class CompanyRetriever(BaseRetriever):
     ) -> list[KnowledgeObject]:
         raise NotImplementedError("CompanyRetriever is a placeholder. Wire the internal knowledge API here.")
 
+    def retrieve_expressions(self, query: str, filters: dict, top_k: int) -> list[Expression]:
+        raise NotImplementedError("CompanyRetriever is a placeholder. Wire the internal knowledge API here.")
